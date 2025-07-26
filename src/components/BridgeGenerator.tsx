@@ -25,6 +25,7 @@ interface BridgeConfig {
   enableStp: boolean;
   enableIpv6: boolean;
   mtu: string;
+  isHetzner: boolean;
 }
 
 interface GeneratedCommand {
@@ -52,7 +53,8 @@ export default function BridgeGenerator() {
     dnsServers: "8.8.8.8,8.8.4.4",
     enableStp: false,
     enableIpv6: false,
-    mtu: "1500"
+    mtu: "1500",
+    isHetzner: false
   });
 
   const [generatedCommands, setGeneratedCommands] = useState<GeneratedCommand[]>([]);
@@ -73,7 +75,59 @@ export default function BridgeGenerator() {
       const prefix = parseInt(netmask.split('/')[1]);
       return prefix >= 1 && prefix <= 32;
     }
-    return validateIP(netmask);
+    // Validate dotted decimal netmask
+    const netmaskValues = [
+      "255.255.255.255", "255.255.255.254", "255.255.255.252", "255.255.255.248",
+      "255.255.255.240", "255.255.255.224", "255.255.255.192", "255.255.255.128",
+      "255.255.255.0", "255.255.254.0", "255.255.252.0", "255.255.248.0",
+      "255.255.240.0", "255.255.224.0", "255.255.192.0", "255.255.128.0",
+      "255.255.0.0", "255.254.0.0", "255.252.0.0", "255.248.0.0",
+      "255.240.0.0", "255.224.0.0", "255.192.0.0", "255.128.0.0",
+      "255.0.0.0", "254.0.0.0", "252.0.0.0", "248.0.0.0",
+      "240.0.0.0", "224.0.0.0", "192.0.0.0", "128.0.0.0"
+    ];
+    return netmaskValues.includes(netmask);
+  };
+
+  const getNetmaskOptions = () => [
+    { value: "/30", label: "/30 - 255.255.255.252" },
+    { value: "/29", label: "/29 - 255.255.255.248" },
+    { value: "/28", label: "/28 - 255.255.255.240" },
+    { value: "/27", label: "/27 - 255.255.255.224" },
+    { value: "/26", label: "/26 - 255.255.255.192" },
+    { value: "/25", label: "/25 - 255.255.255.128" },
+    { value: "/24", label: "/24 - 255.255.255.0" },
+    { value: "/23", label: "/23 - 255.255.254.0" },
+    { value: "/22", label: "/22 - 255.255.252.0" },
+    { value: "/21", label: "/21 - 255.255.248.0" },
+    { value: "/20", label: "/20 - 255.255.240.0" },
+    { value: "/19", label: "/19 - 255.255.224.0" },
+    { value: "/18", label: "/18 - 255.255.192.0" },
+    { value: "/17", label: "/17 - 255.255.128.0" },
+    { value: "/16", label: "/16 - 255.255.0.0" },
+    { value: "/8", label: "/8 - 255.0.0.0" }
+  ];
+
+  const detectHetzner = (ip: string): boolean => {
+    if (!validateIP(ip)) return false;
+    const parts = ip.split('.').map(Number);
+    // Hetzner IP ranges
+    return (
+      (parts[0] === 78 && parts[1] >= 46 && parts[1] <= 47) ||
+      (parts[0] === 88 && parts[1] >= 198 && parts[1] <= 199) ||
+      (parts[0] === 94 && parts[1] >= 130 && parts[1] <= 131) ||
+      (parts[0] === 116 && parts[1] >= 202 && parts[1] <= 203) ||
+      (parts[0] === 138 && parts[1] >= 201 && parts[1] <= 201) ||
+      (parts[0] === 144 && parts[1] >= 76 && parts[1] <= 76) ||
+      (parts[0] === 148 && parts[1] >= 251 && parts[1] <= 251) ||
+      (parts[0] === 159 && parts[1] >= 69 && parts[1] <= 69) ||
+      (parts[0] === 162 && parts[1] >= 55 && parts[1] <= 55) ||
+      (parts[0] === 168 && parts[1] >= 119 && parts[1] <= 119) ||
+      (parts[0] === 176 && parts[1] >= 9 && parts[1] <= 9) ||
+      (parts[0] === 188 && parts[1] >= 40 && parts[1] <= 40) ||
+      (parts[0] === 195 && parts[1] >= 201 && parts[1] <= 201) ||
+      (parts[0] === 213 && parts[1] >= 133 && parts[1] <= 133)
+    );
   };
 
   const validateConfig = (): boolean => {
@@ -87,6 +141,12 @@ export default function BridgeGenerator() {
       newErrors.ipAddress = "IP address is required";
     } else if (!validateIP(config.ipAddress)) {
       newErrors.ipAddress = "Invalid IP address format";
+    } else {
+      // Auto-detect Hetzner and update state if needed
+      const isHetznerIP = detectHetzner(config.ipAddress);
+      if (isHetznerIP !== config.isHetzner) {
+        setConfig(prev => ({ ...prev, isHetzner: isHetznerIP }));
+      }
     }
 
     if (!config.netmask) {
@@ -150,7 +210,11 @@ export default function BridgeGenerator() {
         commands.push(generateUbuntuCommands());
         break;
       case "ubuntu18":
-        commands.push(generateUbuntu18Commands());
+        if (config.isHetzner) {
+          commands.push(generateUbuntu18HetznerCommands());
+        } else {
+          commands.push(generateUbuntu18Commands());
+        }
         break;
       default:
         commands.push(generateGenericCommands());
@@ -312,6 +376,61 @@ gateway ${config.ipv6Gateway}` : ''}`;
     };
   };
 
+  const generateUbuntu18HetznerCommands = (): GeneratedCommand => {
+    const netplanConfig = `network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${config.physicalInterface}:
+      dhcp4: no
+      dhcp6: no
+  bridges:
+    ${config.bridgeName}:
+      interfaces: [${config.physicalInterface}]
+      addresses: [${config.ipAddress}/${config.netmask.split('/')[1] || '24'}]${config.enableIpv6 ? `,
+        "${config.ipv6Address}/${config.ipv6Prefix}"` : ''}]
+      gateway4: ${config.gateway}${config.enableIpv6 && config.ipv6Gateway ? `
+      gateway6: ${config.ipv6Gateway}` : ''}
+      nameservers:
+        addresses: [${config.dnsServers.split(',').map(dns => `"${dns.trim()}"`).join(', ')}${config.enableIpv6 ? `, "2001:4860:4860::8888", "2001:4860:4860::8844"` : ''}]
+      dhcp4: no
+      dhcp6: no${config.enableStp ? `
+      parameters:
+        stp: false` : ''}`;
+
+    return {
+      title: "Ubuntu 18.04+ Bridge Configuration (Hetzner Method)",
+      description: "Configuration for Ubuntu 18.04+ using Netplan specifically for Hetzner servers",
+      commands: [
+        "# Install bridge utilities",
+        "apt-get update && apt-get install bridge-utils -y",
+        "",
+        "# Backup existing netplan configuration",
+        "cp /etc/netplan/*.yaml /etc/netplan/backup-$(date +%Y%m%d).yaml",
+        "",
+        "# Remove existing interface configuration (Hetzner specific)",
+        "rm -f /etc/netplan/50-cloud-init.yaml",
+        "",
+        "# Apply the new configuration",
+        "netplan apply",
+        "",
+        "# Restart networking (Hetzner method)",
+        "systemctl restart systemd-networkd",
+        "",
+        "# Verify bridge configuration",
+        `ip addr show ${config.bridgeName}`,
+        "bridge link show",
+        "netplan status"
+      ],
+      files: [
+        {
+          path: "/etc/netplan/01-netcfg.yaml",
+          content: netplanConfig
+        }
+      ]
+    };
+  };
+
   const generateUbuntu18Commands = (): GeneratedCommand => {
     const netplanConfig = `network:
   version: 2
@@ -338,8 +457,8 @@ gateway ${config.ipv6Gateway}` : ''}`;
         stp: false` : ''}`;
 
     return {
-      title: "Ubuntu 18.04+ Bridge Configuration (Netplan)",
-      description: "Configuration for Ubuntu 18.04+ using Netplan",
+      title: "Ubuntu 18.04+ Bridge Configuration (Standard Method)",
+      description: "Configuration for Ubuntu 18.04+ using Netplan for standard servers",
       commands: [
         "# Install bridge utilities",
         "apt-get update && apt-get install bridge-utils -y",
@@ -437,13 +556,15 @@ gateway ${config.ipv6Gateway}` : ''}`;
 
       <div className="grid lg:grid-cols-2 gap-8">
         {/* Configuration Form */}
-        <Card className="shadow-custom-lg">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Network className="w-5 h-5 text-primary" />
+        <Card className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm">
+          <CardHeader className="pb-6">
+            <CardTitle className="flex items-center gap-3 text-xl">
+              <div className="p-2 rounded-lg bg-primary/10">
+                <Network className="w-5 h-5 text-primary" />
+              </div>
               Network Configuration
             </CardTitle>
-            <CardDescription>
+            <CardDescription className="text-base">
               Configure your server's network settings to generate the appropriate bridge commands
             </CardDescription>
           </CardHeader>
@@ -464,6 +585,26 @@ gateway ${config.ipv6Gateway}` : ''}`;
                 </SelectContent>
               </Select>
               {errors.osType && <p className="text-sm text-destructive">{errors.osType}</p>}
+              
+              {/* Hetzner Detection */}
+              {config.osType === "ubuntu18" && validateIP(config.ipAddress) && (
+                <div className="flex items-center space-x-2 p-3 rounded-lg bg-accent/50 border">
+                  <Info className="w-4 h-4 text-primary" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">
+                      {detectHetzner(config.ipAddress) ? "Hetzner Server Detected" : "Standard Server"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {detectHetzner(config.ipAddress) 
+                        ? "Will use Hetzner-specific configuration method" 
+                        : "Will use standard Ubuntu configuration method"}
+                    </p>
+                  </div>
+                  <Badge variant={detectHetzner(config.ipAddress) ? "default" : "secondary"}>
+                    {detectHetzner(config.ipAddress) ? "Hetzner" : "Standard"}
+                  </Badge>
+                </div>
+              )}
             </div>
 
             {/* Basic Network Settings */}
@@ -482,12 +623,23 @@ gateway ${config.ipv6Gateway}` : ''}`;
 
               <div className="space-y-2">
                 <Label htmlFor="netmask">Netmask *</Label>
+                <Select value={config.netmask} onValueChange={(value) => setConfig(prev => ({ ...prev, netmask: value }))}>
+                  <SelectTrigger className={errors.netmask ? "border-destructive" : ""}>
+                    <SelectValue placeholder="Select netmask" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {getNetmaskOptions().map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Input
-                  id="netmask"
-                  placeholder="255.255.255.0 or /24"
-                  value={config.netmask}
+                  placeholder="Or enter custom: 255.255.255.0"
+                  value={config.netmask.startsWith('/') ? '' : config.netmask}
                   onChange={(e) => setConfig(prev => ({ ...prev, netmask: e.target.value }))}
-                  className={errors.netmask ? "border-destructive" : ""}
+                  className={`mt-2 ${errors.netmask ? "border-destructive" : ""}`}
                 />
                 {errors.netmask && <p className="text-sm text-destructive">{errors.netmask}</p>}
               </div>
@@ -617,9 +769,10 @@ gateway ${config.ipv6Gateway}` : ''}`;
 
             <Button 
               onClick={generateCommands} 
-              className="w-full bg-gradient-primary hover:opacity-90 transition-opacity shadow-custom-md"
+              className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-300 hover-scale text-lg py-6"
               size="lg"
             >
+              <Network className="w-5 h-5 mr-3" />
               Generate Bridge Commands
             </Button>
           </CardContent>
@@ -628,34 +781,40 @@ gateway ${config.ipv6Gateway}` : ''}`;
         {/* Generated Commands */}
         <div className="space-y-6">
           {generatedCommands.length === 0 ? (
-            <Card className="shadow-custom-lg bg-gradient-card">
-              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                <Info className="w-12 h-12 text-muted-foreground mb-4" />
-                <h3 className="text-lg font-semibold mb-2">Ready to Generate</h3>
-                <p className="text-muted-foreground">
+            <Card className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm">
+              <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="p-4 rounded-full bg-primary/10 mb-6">
+                  <Info className="w-12 h-12 text-primary" />
+                </div>
+                <h3 className="text-xl font-semibold mb-3">Ready to Generate Commands</h3>
+                <p className="text-muted-foreground text-lg max-w-md">
                   Fill in the network configuration form and click "Generate Bridge Commands" to see the results.
                 </p>
               </CardContent>
             </Card>
           ) : (
             generatedCommands.map((command, index) => (
-              <Card key={index} className="shadow-custom-lg">
-                <CardHeader>
+              <Card key={index} className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm animate-fade-in">
+                <CardHeader className="pb-4">
                   <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="flex items-center gap-2">
-                        <CheckCircle className="w-5 h-5 text-success" />
+                    <div className="flex-1">
+                      <CardTitle className="flex items-center gap-3 text-lg mb-2">
+                        <div className="p-2 rounded-lg bg-success/10">
+                          <CheckCircle className="w-5 h-5 text-success" />
+                        </div>
                         {command.title}
                       </CardTitle>
-                      <CardDescription>{command.description}</CardDescription>
+                      <CardDescription className="text-base">{command.description}</CardDescription>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 ml-4">
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => copyToClipboard(command.commands.join('\n'))}
+                        className="hover-scale shadow-input"
                       >
-                        <Copy className="w-4 h-4" />
+                        <Copy className="w-4 h-4 mr-2" />
+                        Copy
                       </Button>
                       <Button
                         variant="outline"
