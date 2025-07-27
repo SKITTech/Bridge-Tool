@@ -247,7 +247,7 @@ export default function BridgeGenerator() {
       if (trimmedLine.includes('dns ') || trimmedLine.includes('nameservers:')) {
         const dnsMatch = line.match(/(?:dns\s+|addresses:\s*\[)([0-9.,\s"']+)/i);
         if (dnsMatch) {
-          const dnsServers = dnsMatch[1].replace(/['"]/g, '').split(/[,\s]+/).filter(dns => dns.match(/^[0-9.]+$/));
+          const dnsServers = dnsMatch[1].replace(/['"]/g, '').split(/[,\\s]+/).filter(dns => dns.match(/^[0-9.]+$/));
           if (dnsServers.length > 0) parsedConfig.dnsServers = dnsServers.join(',');
         }
       }
@@ -467,7 +467,7 @@ gateway ${config.ipv6Gateway}` : ''}`;
   bridges:
     ${config.bridgeName}:
       interfaces: [${config.physicalInterface}]
-      addresses: [${config.ipAddress}/${config.netmask.split('/')[1] || '24'}]${config.enableIpv6 ? `,
+      addresses: [${config.ipAddress}/${config.netmask.split('/')[1] || '24'}${config.enableIpv6 ? `,
         "${config.ipv6Address}/${config.ipv6Prefix}"` : ''}]
       gateway4: ${config.gateway}${config.enableIpv6 && config.ipv6Gateway ? `
       gateway6: ${config.ipv6Gateway}` : ''}
@@ -491,16 +491,12 @@ gateway ${config.ipv6Gateway}` : ''}`;
         "# Remove existing interface configuration (Hetzner specific)",
         "rm -f /etc/netplan/50-cloud-init.yaml",
         "",
-        "# Apply the new configuration",
+        "# Apply netplan configuration",
         "netplan apply",
-        "",
-        "# Restart networking (Hetzner method)",
-        "systemctl restart systemd-networkd",
         "",
         "# Verify bridge configuration",
         `ip addr show ${config.bridgeName}`,
-        "bridge link show",
-        "netplan status"
+        "bridge link show"
       ],
       files: [
         {
@@ -518,21 +514,18 @@ gateway ${config.ipv6Gateway}` : ''}`;
   ethernets:
     ${config.physicalInterface}:
       dhcp4: no
+      dhcp6: no
   bridges:
     ${config.bridgeName}:
-      addresses:
-        - ${config.ipAddress}/${config.netmask.split('/')[1] || '24'}${config.enableIpv6 ? `
-        - "${config.ipv6Address}/${config.ipv6Prefix}"` : ''}
-      interfaces: [ ${config.physicalInterface} ]${config.gateway ? `
-      routes:
-        - to: 0.0.0.0/0
-          via: ${config.gateway}` : ''}${config.enableIpv6 && config.ipv6Gateway ? `
+      interfaces: [${config.physicalInterface}]
+      addresses: [${config.ipAddress}/${config.netmask.split('/')[1] || '24'}${config.enableIpv6 ? `,
+        "${config.ipv6Address}/${config.ipv6Prefix}"` : ''}]
+      gateway4: ${config.gateway}${config.enableIpv6 && config.ipv6Gateway ? `
       gateway6: ${config.ipv6Gateway}` : ''}
       nameservers:
-         addresses:${config.dnsServers.split(',').map(dns => `
-           - ${dns.trim()}`).join('')}${config.enableIpv6 ? `
-           - 2001:4860:4860::8888
-           - 2001:4860:4860::8844` : ''}${config.enableStp ? `
+        addresses: [${config.dnsServers.split(',').map(dns => `"${dns.trim()}"`).join(', ')}${config.enableIpv6 ? `, "2001:4860:4860::8888", "2001:4860:4860::8844"` : ''}]
+      dhcp4: no
+      dhcp6: no${config.enableStp ? `
       parameters:
         stp: false` : ''}`;
 
@@ -546,13 +539,12 @@ gateway ${config.ipv6Gateway}` : ''}`;
         "# Backup existing netplan configuration",
         "cp /etc/netplan/*.yaml /etc/netplan/backup-$(date +%Y%m%d).yaml",
         "",
-        "# Apply the new configuration",
+        "# Apply netplan configuration",
         "netplan apply",
         "",
         "# Verify bridge configuration",
         `ip addr show ${config.bridgeName}`,
-        "bridge link show",
-        "netplan status"
+        "bridge link show"
       ],
       files: [
         {
@@ -565,10 +557,15 @@ gateway ${config.ipv6Gateway}` : ''}`;
 
   const generateGenericCommands = (): GeneratedCommand => {
     return {
-      title: "Generic Bridge Commands",
-      description: "Generic commands using ip and brctl utilities",
+      title: "Generic Linux Bridge Configuration",
+      description: "Manual bridge configuration commands for any Linux distribution",
       commands: [
-        "# Create bridge interface",
+        "# Install bridge utilities (distribution specific)",
+        "# For Debian/Ubuntu: apt-get install bridge-utils",
+        "# For RHEL/CentOS: yum install bridge-utils",
+        "# For openSUSE: zypper install bridge-utils",
+        "",
+        "# Create bridge",
         `ip link add name ${config.bridgeName} type bridge`,
         `ip link set ${config.bridgeName} up`,
         "",
@@ -581,28 +578,41 @@ gateway ${config.ipv6Gateway}` : ''}`;
         "# Add default route",
         `ip route add default via ${config.gateway} dev ${config.bridgeName}`,
         "",
-        config.enableIpv6 ? "# Configure IPv6" : "",
+        config.enableIpv6 ? `# Configure IPv6 address` : "",
         config.enableIpv6 ? `ip -6 addr add ${config.ipv6Address}/${config.ipv6Prefix} dev ${config.bridgeName}` : "",
         config.enableIpv6 ? `ip -6 route add default via ${config.ipv6Gateway} dev ${config.bridgeName}` : "",
         config.enableIpv6 ? "" : "",
-        "# Verify configuration",
+        "# Verify bridge configuration",
         `ip addr show ${config.bridgeName}`,
         "bridge link show"
       ].filter(cmd => cmd !== "")
     };
   };
 
-  const copyToClipboard = (text: string): void => {
-    navigator.clipboard.writeText(text).then(() => {
+  const copyToClipboard = async (text: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
       toast({
-        title: "Copied to Clipboard",
+        title: "Copied to clipboard",
         description: "Commands have been copied to your clipboard.",
       });
-    });
+    } catch (err) {
+      toast({
+        title: "Copy failed",
+        description: "Failed to copy to clipboard. Please copy manually.",
+        variant: "destructive",
+      });
+    }
   };
 
-  const downloadScript = (commands: GeneratedCommand): void => {
-    const scriptContent = commands.commands.join('\n');
+  const downloadScript = (command: GeneratedCommand): void => {
+    const scriptContent = `#!/bin/bash
+# ${command.title}
+# ${command.description}
+
+${command.commands.join('\n')}
+`;
+
     const blob = new Blob([scriptContent], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -612,412 +622,448 @@ gateway ${config.ipv6Gateway}` : ''}`;
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    
+
     toast({
       title: "Script Downloaded",
-      description: "The bridge setup script has been downloaded.",
+      description: "Bridge setup script has been downloaded.",
     });
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 space-y-8">
-      {/* Header */}
-      <div className="text-center space-y-4">
-        <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-primary rounded-full mb-4 shadow-glow">
-          <Network className="w-8 h-8 text-primary-foreground" />
+    <div className="min-h-screen bg-gradient-to-br from-background via-card to-secondary/20 p-6">
+      <div className="max-w-7xl mx-auto space-y-10">
+        {/* Header */}
+        <div className="text-center space-y-6 py-12">
+          <div className="flex items-center justify-center gap-4 mb-6">
+            <div className="p-3 rounded-xl bg-gradient-primary shadow-glow">
+              <Network className="h-12 w-12 text-white" />
+            </div>
+            <div>
+              <h1 className="text-5xl font-bold bg-gradient-primary bg-clip-text text-transparent">
+                Bridge Configuration Generator
+              </h1>
+              <div className="h-1 w-32 bg-gradient-primary rounded-full mx-auto mt-2"></div>
+            </div>
+          </div>
+          <p className="text-xl text-muted-foreground max-w-4xl mx-auto leading-relaxed">
+            Professional network bridge configuration tool for enterprise server infrastructure
+          </p>
         </div>
-        <h1 className="text-4xl font-bold bg-gradient-hero bg-clip-text text-transparent">
-          Bridge Configuration Generator
-        </h1>
-        <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-          Generate network bridge configuration commands for KVM virtualization based on Virtualizor documentation
-        </p>
-      </div>
 
-      <div className="grid lg:grid-cols-2 gap-8">
-        {/* Configuration Form */}
-        <Card className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm">
-          <CardHeader className="pb-6">
-            <CardTitle className="flex items-center gap-3 text-xl">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <Network className="w-5 h-5 text-primary" />
-              </div>
-              Network Configuration
-            </CardTitle>
-            <CardDescription className="text-base">
-              Configure your server's network settings to generate the appropriate bridge commands
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Operating System */}
-            <div className="space-y-2">
-              <Label htmlFor="osType">Operating System *</Label>
-              <Select value={config.osType} onValueChange={(value) => setConfig(prev => ({ ...prev, osType: value }))}>
-                <SelectTrigger className={errors.osType ? "border-destructive" : ""}>
-                  <SelectValue placeholder="Select your operating system" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="centos7">CentOS 7 (Without NetworkManager)</SelectItem>
-                  <SelectItem value="almalinux8">AlmaLinux 8.x / 9.x</SelectItem>
-                  <SelectItem value="ubuntu">Ubuntu (Legacy interfaces)</SelectItem>
-                  <SelectItem value="ubuntu18">Ubuntu 18.04+ (Netplan)</SelectItem>
-                  <SelectItem value="generic">Generic (ip commands)</SelectItem>
-                </SelectContent>
-              </Select>
-              {errors.osType && <p className="text-sm text-destructive">{errors.osType}</p>}
-              
-              {/* Hetzner Detection */}
-              {config.osType === "ubuntu18" && validateIP(config.ipAddress) && (
-                <div className="flex items-center space-x-2 p-3 rounded-lg bg-accent/50 border">
-                  <Info className="w-4 h-4 text-primary" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">
-                      {detectHetzner(config.ipAddress) ? "Hetzner Server Detected" : "Standard Server"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {detectHetzner(config.ipAddress) 
-                        ? "Will use Hetzner-specific configuration method" 
-                        : "Will use standard Ubuntu configuration method"}
-                    </p>
+        {/* Main Configuration Form */}
+        <Card className="backdrop-blur-sm bg-gradient-card border-border/50 shadow-professional hover:shadow-lg transition-all duration-500">
+          <CardHeader className="pb-8 border-b border-border/50">
+            <div className="flex items-center justify-between">
+              <div className="space-y-3">
+                <CardTitle className="text-3xl flex items-center gap-3 font-semibold">
+                  <div className="p-2 rounded-lg bg-primary/10">
+                    <Network className="h-7 w-7 text-primary" />
                   </div>
-                  <Badge variant={detectHetzner(config.ipAddress) ? "default" : "secondary"}>
-                    {detectHetzner(config.ipAddress) ? "Hetzner" : "Standard"}
-                  </Badge>
-                </div>
+                  Bridge Configuration
+                </CardTitle>
+                <CardDescription className="text-lg text-muted-foreground">
+                  Configure your network bridge settings with precision and control
+                </CardDescription>
+              </div>
+              {config.isHetzner && (
+                <Badge variant="secondary" className="text-sm px-4 py-2 rounded-full shadow-sm">
+                  <AlertTriangle className="h-4 w-4 mr-2" />
+                  Hetzner Server Detected
+                </Badge>
               )}
             </div>
+          </CardHeader>
 
-            {/* Basic Network Settings */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="ipAddress">IP Address *</Label>
-                <Input
-                  id="ipAddress"
-                  placeholder="192.168.1.10"
-                  value={config.ipAddress}
-                  onChange={(e) => setConfig(prev => ({ ...prev, ipAddress: e.target.value }))}
-                  className={errors.ipAddress ? "border-destructive" : ""}
+          <CardContent className="space-y-8 pt-8">
+            {/* Auto-fill from config */}
+            <div className="space-y-4 p-6 rounded-xl bg-accent/30 border border-accent/40">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-info/10">
+                  <Info className="h-5 w-5 text-info" />
+                </div>
+                <div>
+                  <Label htmlFor="autoFill" className="text-lg font-semibold">
+                    Smart Configuration Parser
+                  </Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Automatically extract settings from your existing network configuration
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <Textarea
+                  id="autoFill"
+                  placeholder="Paste your current network configuration file content here (e.g., /etc/network/interfaces, ifcfg-eth0, netplan yaml)..."
+                  value={autoFillText}
+                  onChange={(e) => setAutoFillText(e.target.value)}
+                  className="min-h-[120px] font-mono text-sm bg-background/50 border-border/60 focus:border-primary/60 transition-colors"
                 />
-                {errors.ipAddress && <p className="text-sm text-destructive">{errors.ipAddress}</p>}
+                <Button
+                  onClick={() => parseNetworkConfig(autoFillText)}
+                  disabled={!autoFillText.trim()}
+                  variant="secondary"
+                  className="w-full bg-primary/5 hover:bg-primary/10 border-primary/20"
+                >
+                  <Info className="h-4 w-4 mr-2" />
+                  Parse Configuration
+                </Button>
+              </div>
+            </div>
+
+            <Separator className="my-8 bg-gradient-to-r from-transparent via-border to-transparent h-px" />
+
+            {/* Form content with improved spacing and design */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Operating System */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  Operating System
+                  <span className="text-destructive">*</span>
+                </Label>
+                <Select value={config.osType} onValueChange={(value) => setConfig(prev => ({ ...prev, osType: value }))}>
+                  <SelectTrigger className={`h-12 text-base ${errors.osType ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors`}>
+                    <SelectValue placeholder="Select your operating system" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-popover/95 backdrop-blur-sm">
+                    <SelectItem value="centos7" className="text-base py-3">CentOS 7</SelectItem>
+                    <SelectItem value="almalinux8" className="text-base py-3">AlmaLinux 8.x/9.x</SelectItem>
+                    <SelectItem value="ubuntu" className="text-base py-3">Ubuntu 16.04/20.04</SelectItem>
+                    <SelectItem value="ubuntu18" className="text-base py-3">Ubuntu 18.04+</SelectItem>
+                    <SelectItem value="generic" className="text-base py-3">Generic Linux</SelectItem>
+                  </SelectContent>
+                </Select>
+                {errors.osType && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.osType}
+                  </p>
+                )}
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="netmask">Netmask *</Label>
+              {/* Bridge Name */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  Bridge Name
+                  <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  value={config.bridgeName}
+                  onChange={(e) => setConfig(prev => ({ ...prev, bridgeName: e.target.value }))}
+                  placeholder="viifbr0"
+                  className={`h-12 text-base ${errors.bridgeName ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
+                />
+                {errors.bridgeName && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.bridgeName}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Network Configuration with improved styling */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+              {/* IP Address */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-3">
+                  IP Address
+                  <span className="text-destructive">*</span>
+                  {config.isHetzner && (
+                    <Badge variant="outline" className="text-xs bg-warning/10 text-warning border-warning/30">
+                      Hetzner Detected
+                    </Badge>
+                  )}
+                </Label>
+                <Input
+                  value={config.ipAddress}
+                  onChange={(e) => {
+                    const newIP = e.target.value;
+                    const isHetznerIP = detectHetzner(newIP);
+                    setConfig(prev => ({ 
+                      ...prev, 
+                      ipAddress: newIP, 
+                      isHetzner: isHetznerIP 
+                    }));
+                  }}
+                  placeholder="192.168.1.100"
+                  className={`h-12 text-base ${errors.ipAddress ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
+                />
+                {errors.ipAddress && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.ipAddress}
+                  </p>
+                )}
+              </div>
+
+              {/* Netmask */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  Netmask
+                  <span className="text-destructive">*</span>
+                </Label>
                 <Select value={config.netmask} onValueChange={(value) => setConfig(prev => ({ ...prev, netmask: value }))}>
-                  <SelectTrigger className={errors.netmask ? "border-destructive" : ""}>
+                  <SelectTrigger className={`h-12 text-base ${errors.netmask ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors`}>
                     <SelectValue placeholder="Select netmask" />
                   </SelectTrigger>
-                  <SelectContent>
-                    {getNetmaskOptions().map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
+                  <SelectContent className="bg-popover/95 backdrop-blur-sm max-h-60 overflow-auto">
+                    {getNetmaskOptions().map(option => (
+                      <SelectItem key={option.value} value={option.value} className="text-base py-3">
                         {option.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <Input
-                  placeholder="Or enter custom: 255.255.255.0"
-                  value={config.netmask.startsWith('/') ? '' : config.netmask}
-                  onChange={(e) => setConfig(prev => ({ ...prev, netmask: e.target.value }))}
-                  className={`mt-2 ${errors.netmask ? "border-destructive" : ""}`}
-                />
-                {errors.netmask && <p className="text-sm text-destructive">{errors.netmask}</p>}
+                {errors.netmask && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.netmask}
+                  </p>
+                )}
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="gateway">Gateway *</Label>
-              <Input
-                id="gateway"
-                placeholder="192.168.1.1"
-                value={config.gateway}
-                onChange={(e) => setConfig(prev => ({ ...prev, gateway: e.target.value }))}
-                className={errors.gateway ? "border-destructive" : ""}
-              />
-              {errors.gateway && <p className="text-sm text-destructive">{errors.gateway}</p>}
-            </div>
-
-            {/* Bridge Settings */}
-            <Separator />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="bridgeName">Bridge Name *</Label>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+              {/* Gateway */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  Gateway
+                  <span className="text-destructive">*</span>
+                </Label>
                 <Input
-                  id="bridgeName"
-                  placeholder="viifbr0"
-                  value={config.bridgeName}
-                  onChange={(e) => setConfig(prev => ({ ...prev, bridgeName: e.target.value }))}
-                  className={errors.bridgeName ? "border-destructive" : ""}
+                  value={config.gateway}
+                  onChange={(e) => setConfig(prev => ({ ...prev, gateway: e.target.value }))}
+                  placeholder="192.168.1.1"
+                  className={`h-12 text-base ${errors.gateway ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
                 />
-                {errors.bridgeName && <p className="text-sm text-destructive">{errors.bridgeName}</p>}
+                {errors.gateway && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.gateway}
+                  </p>
+                )}
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="physicalInterface">Physical Interface *</Label>
+              {/* Physical Interface */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  Physical Interface
+                  <span className="text-destructive">*</span>
+                </Label>
                 <Input
-                  id="physicalInterface"
-                  placeholder="eth0, ens3, etc."
                   value={config.physicalInterface}
                   onChange={(e) => setConfig(prev => ({ ...prev, physicalInterface: e.target.value }))}
-                  className={errors.physicalInterface ? "border-destructive" : ""}
+                  placeholder="eth0"
+                  className={`h-12 text-base ${errors.physicalInterface ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
                 />
-                {errors.physicalInterface && <p className="text-sm text-destructive">{errors.physicalInterface}</p>}
+                {errors.physicalInterface && (
+                  <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                    {errors.physicalInterface}
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* Advanced Options */}
-            <Separator />
-            <div className="space-y-4">
-              <div className="flex items-center space-x-2">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+              {/* Enable STP */}
+              <div className="flex items-center space-x-4">
+                <Switch
+                  id="enableStp"
+                  checked={config.enableStp}
+                  onCheckedChange={(checked) => setConfig(prev => ({ ...prev, enableStp: checked }))}
+                />
+                <Label htmlFor="enableStp" className="text-lg font-semibold">
+                  Enable STP (Spanning Tree Protocol)
+                </Label>
+              </div>
+
+              {/* MTU */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  MTU
+                </Label>
+                <Input
+                  type="number"
+                  min={576}
+                  max={9000}
+                  value={config.mtu}
+                  onChange={(e) => setConfig(prev => ({ ...prev, mtu: e.target.value }))}
+                  placeholder="1500"
+                  className="h-12 text-base border-border hover:border-primary/50 transition-colors bg-background/50"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+              {/* Enable IPv6 */}
+              <div className="flex items-center space-x-4">
                 <Switch
                   id="enableIpv6"
                   checked={config.enableIpv6}
                   onCheckedChange={(checked) => setConfig(prev => ({ ...prev, enableIpv6: checked }))}
                 />
-                <Label htmlFor="enableIpv6">Enable IPv6 Configuration</Label>
+                <Label htmlFor="enableIpv6" className="text-lg font-semibold">
+                  Enable IPv6
+                </Label>
               </div>
 
-              {config.enableIpv6 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-6 border-l-2 border-accent">
-                  <div className="space-y-2">
-                    <Label htmlFor="ipv6Address">IPv6 Address</Label>
-                    <Input
-                      id="ipv6Address"
-                      placeholder="2001:db8::1"
-                      value={config.ipv6Address}
-                      onChange={(e) => setConfig(prev => ({ ...prev, ipv6Address: e.target.value }))}
-                      className={errors.ipv6Address ? "border-destructive" : ""}
-                    />
-                    {errors.ipv6Address && <p className="text-sm text-destructive">{errors.ipv6Address}</p>}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="ipv6Gateway">IPv6 Gateway</Label>
-                    <Input
-                      id="ipv6Gateway"
-                      placeholder="2001:db8::1"
-                      value={config.ipv6Gateway}
-                      onChange={(e) => setConfig(prev => ({ ...prev, ipv6Gateway: e.target.value }))}
-                      className={errors.ipv6Gateway ? "border-destructive" : ""}
-                    />
-                    {errors.ipv6Gateway && <p className="text-sm text-destructive">{errors.ipv6Gateway}</p>}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="ipv6Prefix">IPv6 Prefix Length</Label>
-                    <Input
-                      id="ipv6Prefix"
-                      placeholder="64"
-                      value={config.ipv6Prefix}
-                      onChange={(e) => setConfig(prev => ({ ...prev, ipv6Prefix: e.target.value }))}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="dnsServers">DNS Servers</Label>
+              {/* DNS Servers */}
+              <div className="space-y-4">
+                <Label className="text-lg font-semibold flex items-center gap-2">
+                  DNS Servers
+                </Label>
                 <Input
-                  id="dnsServers"
-                  placeholder="8.8.8.8,8.8.4.4"
                   value={config.dnsServers}
                   onChange={(e) => setConfig(prev => ({ ...prev, dnsServers: e.target.value }))}
+                  placeholder="8.8.8.8,8.8.4.4"
+                  className="h-12 text-base border-border hover:border-primary/50 transition-colors bg-background/50"
                 />
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="mtu">MTU Size</Label>
+            {config.enableIpv6 && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+                {/* IPv6 Address */}
+                <div className="space-y-4">
+                  <Label className="text-lg font-semibold flex items-center gap-2">
+                    IPv6 Address
+                    <span className="text-destructive">*</span>
+                  </Label>
                   <Input
-                    id="mtu"
-                    placeholder="1500"
-                    value={config.mtu}
-                    onChange={(e) => setConfig(prev => ({ ...prev, mtu: e.target.value }))}
+                    value={config.ipv6Address}
+                    onChange={(e) => setConfig(prev => ({ ...prev, ipv6Address: e.target.value }))}
+                    placeholder="2001:db8::1"
+                    className={`h-12 text-base ${errors.ipv6Address ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
                   />
+                  {errors.ipv6Address && (
+                    <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                      <AlertTriangle className="h-4 w-4" />
+                      {errors.ipv6Address}
+                    </p>
+                  )}
                 </div>
 
-                <div className="flex items-center space-x-2 pt-6">
-                  <Switch
-                    id="enableStp"
-                    checked={config.enableStp}
-                    onCheckedChange={(checked) => setConfig(prev => ({ ...prev, enableStp: checked }))}
+                {/* IPv6 Gateway */}
+                <div className="space-y-4">
+                  <Label className="text-lg font-semibold flex items-center gap-2">
+                    IPv6 Gateway
+                    <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={config.ipv6Gateway}
+                    onChange={(e) => setConfig(prev => ({ ...prev, ipv6Gateway: e.target.value }))}
+                    placeholder="2001:db8::fffe"
+                    className={`h-12 text-base ${errors.ipv6Gateway ? "border-destructive" : "border-border hover:border-primary/50"} transition-colors bg-background/50`}
                   />
-                  <Label htmlFor="enableStp">Enable STP</Label>
+                  {errors.ipv6Gateway && (
+                    <p className="text-sm text-destructive flex items-center gap-2 bg-destructive/10 p-2 rounded-lg">
+                      <AlertTriangle className="h-4 w-4" />
+                      {errors.ipv6Gateway}
+                    </p>
+                  )}
                 </div>
               </div>
+            )}
+
+            {/* Generate Button */}
+            <div className="flex justify-center pt-8">
+              <Button
+                onClick={generateCommands}
+                size="lg"
+                className="px-12 py-4 text-lg font-semibold min-w-[280px] bg-gradient-primary hover:opacity-95 shadow-professional hover:shadow-glow transition-all duration-500 transform hover:scale-105"
+              >
+                <Network className="h-6 w-6 mr-3" />
+                Generate Bridge Commands
+              </Button>
             </div>
-
-            {/* Auto-fill Section */}
-            <Separator />
-            <div className="space-y-3">
-              <Label htmlFor="autoFill" className="text-base font-medium">Auto-fill from Network Configuration</Label>
-              <p className="text-sm text-muted-foreground">
-                Paste your current network configuration file content (e.g., /etc/network/interfaces, /etc/sysconfig/network-scripts/ifcfg-*, netplan YAML) to automatically populate the form fields.
-              </p>
-              <Textarea
-                id="autoFill"
-                placeholder={`Paste your network config here, e.g.:
-# /etc/network/interfaces format:
-auto eth0
-iface eth0 inet static
-address 192.168.1.10
-netmask 255.255.255.0
-gateway 192.168.1.1
-
-# Or CentOS ifcfg format:
-DEVICE=eth0
-BOOTPROTO=static
-IPADDR=192.168.1.10
-NETMASK=255.255.255.0
-GATEWAY=192.168.1.1
-
-# Or netplan format:
-network:
-  version: 2
-  ethernets:
-    eth0:
-      addresses: [192.168.1.10/24]
-      gateway4: 192.168.1.1`}
-                value={autoFillText}
-                onChange={(e) => setAutoFillText(e.target.value)}
-                className="min-h-[120px] font-mono text-sm"
-              />
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => parseNetworkConfig(autoFillText)}
-                  disabled={!autoFillText.trim()}
-                  className="flex-1"
-                >
-                  <Info className="w-4 h-4 mr-2" />
-                  Parse & Auto-fill
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setAutoFillText("")}
-                  disabled={!autoFillText.trim()}
-                >
-                  Clear
-                </Button>
-              </div>
-            </div>
-            
-            <Button 
-              onClick={generateCommands} 
-              className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-300 hover-scale text-lg py-6"
-              size="lg"
-            >
-              <Network className="w-5 h-5 mr-3" />
-              Generate Bridge Commands
-            </Button>
           </CardContent>
         </Card>
 
-        {/* Generated Commands */}
-        <div className="space-y-6">
-          {generatedCommands.length === 0 ? (
-            <Card className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm">
-              <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                <div className="p-4 rounded-full bg-primary/10 mb-6">
-                  <Info className="w-12 h-12 text-primary" />
-                </div>
-                <h3 className="text-xl font-semibold mb-3">Ready to Generate Commands</h3>
-                <p className="text-muted-foreground text-lg max-w-md">
-                  Fill in the network configuration form and click "Generate Bridge Commands" to see the results.
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            generatedCommands.map((command, index) => (
-              <Card key={index} className="shadow-professional border-gradient bg-gradient-card backdrop-blur-sm animate-fade-in">
-                <CardHeader className="pb-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <CardTitle className="flex items-center gap-3 text-lg mb-2">
+        {/* Generated Commands Display */}
+        {generatedCommands.length > 0 && (
+          <div className="space-y-8">
+            {generatedCommands.map((command, index) => (
+              <Card key={index} className="backdrop-blur-sm bg-gradient-card border-border/60 shadow-professional hover:shadow-lg transition-all duration-500">
+                <CardHeader className="pb-6 border-b border-border/50">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-3">
+                      <CardTitle className="text-2xl flex items-center gap-3 font-semibold">
                         <div className="p-2 rounded-lg bg-success/10">
-                          <CheckCircle className="w-5 h-5 text-success" />
+                          <CheckCircle className="h-6 w-6 text-success" />
                         </div>
                         {command.title}
                       </CardTitle>
-                      <CardDescription className="text-base">{command.description}</CardDescription>
+                      <CardDescription className="text-base text-muted-foreground">
+                        {command.description}
+                      </CardDescription>
                     </div>
-                    <div className="flex gap-2 ml-4">
+                    <div className="flex gap-3">
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => copyToClipboard(command.commands.join('\n'))}
-                        className="hover-scale shadow-input"
+                        className="flex items-center gap-2 px-4 py-2 bg-background/50 hover:bg-primary/5 border-primary/20 transition-colors"
                       >
-                        <Copy className="w-4 h-4 mr-2" />
-                        Copy
+                        <Copy className="h-4 w-4" />
+                        Copy Commands
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => downloadScript(command)}
+                        className="flex items-center gap-2 px-4 py-2 bg-background/50 hover:bg-success/5 border-success/20 transition-colors"
                       >
-                        <Download className="w-4 h-4" />
+                        <Download className="h-4 w-4" />
+                        Download Script
                       </Button>
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <Label className="text-sm font-medium">Commands:</Label>
-                    <Textarea
-                      readOnly
-                      value={command.commands.join('\n')}
-                      className="mt-2 font-mono text-sm min-h-[200px] bg-muted"
-                    />
+
+                <CardContent className="space-y-6">
+                  {/* Commands */}
+                  <div className="space-y-3">
+                    <h4 className="text-lg font-semibold">Commands</h4>
+                    <div className="bg-muted/30 rounded-lg p-4 border">
+                      <pre className="text-sm font-mono whitespace-pre-wrap text-foreground/90">
+                        {command.commands.join('\n')}
+                      </pre>
+                    </div>
                   </div>
 
+                  {/* Files */}
                   {command.files && command.files.length > 0 && (
-                    <div className="space-y-3">
-                      <Label className="text-sm font-medium">Configuration Files:</Label>
+                    <div className="space-y-4">
+                      <h4 className="text-lg font-semibold">Configuration Files</h4>
                       {command.files.map((file, fileIndex) => (
                         <div key={fileIndex} className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <Badge variant="outline" className="font-mono text-xs">
-                              {file.path}
-                            </Badge>
+                            <Label className="text-base font-medium">{file.path}</Label>
                             <Button
-                              variant="ghost"
+                              variant="outline"
                               size="sm"
                               onClick={() => copyToClipboard(file.content)}
+                              className="text-xs"
                             >
-                              <Copy className="w-3 h-3" />
+                              <Copy className="h-3 w-3 mr-1" />
+                              Copy
                             </Button>
                           </div>
-                          <Textarea
-                            readOnly
-                            value={file.content}
-                            className="font-mono text-sm bg-muted"
-                            rows={Math.min(file.content.split('\n').length + 1, 10)}
-                          />
+                          <div className="bg-muted/30 rounded-lg p-4 border">
+                            <pre className="text-sm font-mono whitespace-pre-wrap text-foreground/90">
+                              {file.content}
+                            </pre>
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
-
-                  <div className="flex items-start gap-2 p-3 bg-warning/10 border border-warning/20 rounded-md">
-                    <AlertTriangle className="w-5 h-5 text-warning mt-0.5 flex-shrink-0" />
-                    <div className="text-sm">
-                      <p className="font-medium text-warning">Important Notes:</p>
-                      <ul className="mt-1 space-y-1 text-warning-foreground/80">
-                        <li>• Always backup your current network configuration before applying changes</li>
-                        <li>• Test these commands in a safe environment first</li>
-                        <li>• Ensure you have console access in case network connectivity is lost</li>
-                        <li>• Verify your network settings match your infrastructure</li>
-                      </ul>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
