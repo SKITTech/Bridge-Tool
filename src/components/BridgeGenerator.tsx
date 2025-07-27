@@ -59,6 +59,7 @@ export default function BridgeGenerator() {
 
   const [generatedCommands, setGeneratedCommands] = useState<GeneratedCommand[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [autoFillText, setAutoFillText] = useState("");
 
   const validateIP = (ip: string): boolean => {
     const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
@@ -187,6 +188,86 @@ export default function BridgeGenerator() {
     return Object.keys(newErrors).length === 0;
   };
 
+  const parseNetworkConfig = (configText: string): void => {
+    const lines = configText.split('\n');
+    const parsedConfig: Partial<BridgeConfig> = {};
+
+    lines.forEach(line => {
+      const trimmedLine = line.trim().toLowerCase();
+      
+      // Parse different config formats
+      if (trimmedLine.includes('ipaddr=') || trimmedLine.includes('address ')) {
+        const ipMatch = line.match(/(?:ipaddr=|address\s+)([0-9.]+)/i);
+        if (ipMatch) parsedConfig.ipAddress = ipMatch[1];
+      }
+      
+      if (trimmedLine.includes('netmask=') || trimmedLine.includes('netmask ')) {
+        const netmaskMatch = line.match(/(?:netmask=|netmask\s+)([0-9./]+)/i);
+        if (netmaskMatch) parsedConfig.netmask = netmaskMatch[1];
+      }
+      
+      if (trimmedLine.includes('gateway=') || trimmedLine.includes('gateway ')) {
+        const gatewayMatch = line.match(/(?:gateway=|gateway\s+)([0-9.]+)/i);
+        if (gatewayMatch) parsedConfig.gateway = gatewayMatch[1];
+      }
+
+      // Parse netplan format
+      if (trimmedLine.includes('addresses:')) {
+        const addressMatch = line.match(/addresses:\s*\[([^\]]+)\]/i);
+        if (addressMatch) {
+          const addr = addressMatch[1].replace(/['"]/g, '');
+          if (addr.includes('/')) {
+            const [ip, prefix] = addr.split('/');
+            parsedConfig.ipAddress = ip;
+            parsedConfig.netmask = `/${prefix}`;
+          }
+        }
+      }
+
+      if (trimmedLine.includes('gateway4:')) {
+        const gatewayMatch = line.match(/gateway4:\s*([0-9.]+)/i);
+        if (gatewayMatch) parsedConfig.gateway = gatewayMatch[1];
+      }
+
+      // Parse interface names
+      if (trimmedLine.includes('device=') || trimmedLine.includes('ifname ')) {
+        const interfaceMatch = line.match(/(?:device=|ifname\s+)([a-z0-9]+)/i);
+        if (interfaceMatch && !interfaceMatch[1].includes('br') && !interfaceMatch[1].includes('viif')) {
+          parsedConfig.physicalInterface = interfaceMatch[1];
+        }
+      }
+
+      // Parse bridge names
+      if (trimmedLine.includes('bridge=')) {
+        const bridgeMatch = line.match(/bridge=([a-z0-9]+)/i);
+        if (bridgeMatch) parsedConfig.bridgeName = bridgeMatch[1];
+      }
+
+      // Parse DNS servers
+      if (trimmedLine.includes('dns ') || trimmedLine.includes('nameservers:')) {
+        const dnsMatch = line.match(/(?:dns\s+|addresses:\s*\[)([0-9.,\s"']+)/i);
+        if (dnsMatch) {
+          const dnsServers = dnsMatch[1].replace(/['"]/g, '').split(/[,\s]+/).filter(dns => dns.match(/^[0-9.]+$/));
+          if (dnsServers.length > 0) parsedConfig.dnsServers = dnsServers.join(',');
+        }
+      }
+    });
+
+    // Apply parsed configuration
+    setConfig(prev => ({
+      ...prev,
+      ...parsedConfig
+    }));
+
+    // Clear the autofill text
+    setAutoFillText("");
+
+    toast({
+      title: "Configuration Parsed",
+      description: "Network configuration has been automatically filled from the provided text.",
+    });
+  };
+
   const generateCommands = (): void => {
     if (!validateConfig()) {
       toast({
@@ -288,9 +369,8 @@ BRIDGE=${config.bridgeName}`;
       `nmcli connection add type bridge con-name ${config.bridgeName} ifname ${config.bridgeName}`,
     ];
 
-    if (config.enableStp) {
-      commands.push(`nmcli connection modify ${config.bridgeName} bridge.stp no`);
-    }
+    // Always add STP command as per documentation
+    commands.push(`nmcli connection modify ${config.bridgeName} bridge.stp no`);
 
     commands.push(
       `nmcli connection modify ${config.bridgeName} ipv4.addresses '${config.ipAddress}/${config.netmask.split('/')[1] || '24'}' ipv4.gateway '${config.gateway}' ipv4.dns '${config.dnsServers.split(',')[0]}' ipv4.method manual`
@@ -767,6 +847,63 @@ gateway ${config.ipv6Gateway}` : ''}`;
               </div>
             </div>
 
+            {/* Auto-fill Section */}
+            <Separator />
+            <div className="space-y-3">
+              <Label htmlFor="autoFill" className="text-base font-medium">Auto-fill from Network Configuration</Label>
+              <p className="text-sm text-muted-foreground">
+                Paste your current network configuration file content (e.g., /etc/network/interfaces, /etc/sysconfig/network-scripts/ifcfg-*, netplan YAML) to automatically populate the form fields.
+              </p>
+              <Textarea
+                id="autoFill"
+                placeholder={`Paste your network config here, e.g.:
+# /etc/network/interfaces format:
+auto eth0
+iface eth0 inet static
+address 192.168.1.10
+netmask 255.255.255.0
+gateway 192.168.1.1
+
+# Or CentOS ifcfg format:
+DEVICE=eth0
+BOOTPROTO=static
+IPADDR=192.168.1.10
+NETMASK=255.255.255.0
+GATEWAY=192.168.1.1
+
+# Or netplan format:
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses: [192.168.1.10/24]
+      gateway4: 192.168.1.1`}
+                value={autoFillText}
+                onChange={(e) => setAutoFillText(e.target.value)}
+                className="min-h-[120px] font-mono text-sm"
+              />
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => parseNetworkConfig(autoFillText)}
+                  disabled={!autoFillText.trim()}
+                  className="flex-1"
+                >
+                  <Info className="w-4 h-4 mr-2" />
+                  Parse & Auto-fill
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setAutoFillText("")}
+                  disabled={!autoFillText.trim()}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+            
             <Button 
               onClick={generateCommands} 
               className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-300 hover-scale text-lg py-6"
