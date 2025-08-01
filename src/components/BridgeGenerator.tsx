@@ -193,6 +193,27 @@ export default function BridgeGenerator() {
     const lines = configText.split('\n');
     const parsedConfig: Partial<BridgeConfig> = {};
 
+    // Auto-detect operating system from configuration style
+    const detectOS = (text: string): string => {
+      const lowerText = text.toLowerCase();
+      if (lowerText.includes('netplan') || lowerText.includes('addresses:') || lowerText.includes('gateway4:')) {
+        return 'ubuntu18';
+      } else if (lowerText.includes('nmcli') || lowerText.includes('networkmanager')) {
+        return 'almalinux8';
+      } else if (lowerText.includes('auto ') && lowerText.includes('iface ') && lowerText.includes('inet static')) {
+        return 'ubuntu';
+      } else if (lowerText.includes('device=') && lowerText.includes('bootproto=') && lowerText.includes('onboot=')) {
+        return 'centos7';
+      }
+      return '';
+    };
+
+    const detectedOS = detectOS(configText);
+    if (detectedOS) {
+      console.log("Auto-detected OS:", detectedOS);
+      parsedConfig.osType = detectedOS;
+    }
+
     lines.forEach((line, index) => {
       const trimmedLine = line.trim().toLowerCase();
       console.log(`Line ${index}: "${line}" -> "${trimmedLine}"`);
@@ -290,23 +311,24 @@ export default function BridgeGenerator() {
       const keyValueMatch = line.match(/^([A-Z_]+)=(.+)$/);
       if (keyValueMatch) {
         const [, key, value] = keyValueMatch;
+        const cleanValue = value.trim(); // Remove trailing spaces
         switch (key.toUpperCase()) {
           case 'IPADDR':
-            console.log("Found IPADDR:", value);
-            parsedConfig.ipAddress = value;
+            console.log("Found IPADDR:", cleanValue);
+            parsedConfig.ipAddress = cleanValue;
             break;
           case 'NETMASK':
-            console.log("Found NETMASK:", value);
-            parsedConfig.netmask = value;
+            console.log("Found NETMASK:", cleanValue);
+            parsedConfig.netmask = cleanValue;
             break;
           case 'GATEWAY':
-            console.log("Found GATEWAY:", value);
-            parsedConfig.gateway = value;
+            console.log("Found GATEWAY:", cleanValue);
+            parsedConfig.gateway = cleanValue;
             break;
           case 'DEVICE':
-            if (!value.includes('br') && !value.includes('viif')) {
-              console.log("Found DEVICE:", value);
-              parsedConfig.physicalInterface = value;
+            if (!cleanValue.includes('br') && !cleanValue.includes('viif')) {
+              console.log("Found DEVICE:", cleanValue);
+              parsedConfig.physicalInterface = cleanValue;
             }
             break;
         }
