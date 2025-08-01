@@ -297,6 +297,9 @@ export default function BridgeGenerator() {
           commands.push(generateUbuntu18Commands());
         }
         break;
+      case "bond":
+        commands.push(generateBondCommands());
+        break;
       default:
         commands.push(generateGenericCommands());
     }
@@ -555,6 +558,94 @@ gateway ${config.ipv6Gateway}` : ''}`;
     };
   };
 
+  const generateBondCommands = (): GeneratedCommand => {
+    const bondConfig = `# Bond configuration for high availability
+DEVICE=bond0
+TYPE=Bond
+BONDING_MASTER=yes
+BOOTPROTO=static
+IPADDR=${config.ipAddress}
+NETMASK=${config.netmask}
+GATEWAY=${config.gateway}
+ONBOOT=yes
+BONDING_OPTS="mode=active-backup miimon=100"${config.enableIpv6 ? `
+IPV6INIT=yes
+IPV6ADDR=${config.ipv6Address}/${config.ipv6Prefix}
+IPV6_DEFAULTGW=${config.ipv6Gateway}` : ''}`;
+
+    const bridgeOnBondConfig = `# Bridge on top of bond
+DEVICE=${config.bridgeName}
+TYPE=Bridge
+BOOTPROTO=static
+IPADDR=${config.ipAddress}
+NETMASK=${config.netmask}
+GATEWAY=${config.gateway}
+ONBOOT=yes${config.enableIpv6 ? `
+IPV6INIT=yes
+IPV6ADDR=${config.ipv6Address}/${config.ipv6Prefix}
+IPV6_DEFAULTGW=${config.ipv6Gateway}` : ''}`;
+
+    const slaveConfig = `# Slave interface configuration
+DEVICE=${config.physicalInterface}
+TYPE=Ethernet
+ONBOOT=yes
+MASTER=bond0
+SLAVE=yes`;
+
+    const bondBridgeConfig = `# Bond as bridge member
+DEVICE=bond0
+ONBOOT=yes
+BRIDGE=${config.bridgeName}`;
+
+    return {
+      title: "Bond Server Bridge Configuration",
+      description: "High availability bond configuration with bridge for redundant network setup",
+      commands: [
+        "# Install bonding and bridge utilities",
+        "modprobe bonding",
+        "modprobe bridge",
+        "",
+        "# For RHEL/CentOS/AlmaLinux:",
+        "yum install bridge-utils -y || dnf install bridge-utils -y",
+        "",
+        "# For Ubuntu/Debian:",
+        "# apt-get update && apt-get install bridge-utils ifenslave -y",
+        "",
+        "# Load bonding module at boot",
+        "echo 'bonding' >> /etc/modules-load.d/bonding.conf",
+        "",
+        "# Backup original interface configurations",
+        `cp /etc/sysconfig/network-scripts/ifcfg-${config.physicalInterface} /etc/sysconfig/network-scripts/ifcfg-${config.physicalInterface}.bak 2>/dev/null || echo "No existing config to backup"`,
+        "",
+        "# Restart network service",
+        "systemctl restart network || systemctl restart NetworkManager",
+        "",
+        "# Verify bond and bridge status",
+        "cat /proc/net/bonding/bond0",
+        `ip addr show ${config.bridgeName}`,
+        "bridge link show",
+        "",
+        "# Check bond status",
+        "ip link show bond0",
+        "ip link show | grep -E '(bond0|${config.bridgeName}|${config.physicalInterface})'"
+      ],
+      files: [
+        {
+          path: "/etc/sysconfig/network-scripts/ifcfg-bond0",
+          content: bondConfig
+        },
+        {
+          path: `/etc/sysconfig/network-scripts/ifcfg-${config.bridgeName}`,
+          content: bridgeOnBondConfig
+        },
+        {
+          path: `/etc/sysconfig/network-scripts/ifcfg-${config.physicalInterface}`,
+          content: slaveConfig
+        }
+      ]
+    };
+  };
+
   const generateGenericCommands = (): GeneratedCommand => {
     return {
       title: "Generic Linux Bridge Configuration",
@@ -729,6 +820,7 @@ ${command.commands.join('\n')}
                     <SelectItem value="almalinux8" className="text-base py-3">AlmaLinux 8.x/9.x</SelectItem>
                     <SelectItem value="ubuntu" className="text-base py-3">Ubuntu 16.04/20.04</SelectItem>
                     <SelectItem value="ubuntu18" className="text-base py-3">Ubuntu 18.04+</SelectItem>
+                    <SelectItem value="bond" className="text-base py-3">Bond Server Configuration</SelectItem>
                     <SelectItem value="generic" className="text-base py-3">Generic Linux</SelectItem>
                   </SelectContent>
                 </Select>
