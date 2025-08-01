@@ -189,83 +189,153 @@ export default function BridgeGenerator() {
   };
 
   const parseNetworkConfig = (configText: string): void => {
+    console.log("Starting to parse configuration:", configText);
     const lines = configText.split('\n');
     const parsedConfig: Partial<BridgeConfig> = {};
 
-    lines.forEach(line => {
+    lines.forEach((line, index) => {
       const trimmedLine = line.trim().toLowerCase();
+      console.log(`Line ${index}: "${line}" -> "${trimmedLine}"`);
       
-      // Parse different config formats
-      if (trimmedLine.includes('ipaddr=') || trimmedLine.includes('address ')) {
-        const ipMatch = line.match(/(?:ipaddr=|address\s+)([0-9.]+)/i);
-        if (ipMatch) parsedConfig.ipAddress = ipMatch[1];
+      // Parse different config formats with improved regex patterns
+      
+      // IP Address parsing - multiple formats
+      if (trimmedLine.includes('ipaddr=') || trimmedLine.includes('address ') || trimmedLine.match(/^\s*address\s+[0-9]/)) {
+        const ipMatch = line.match(/(?:ipaddr=|address\s+|address=)([0-9.]+)/i);
+        if (ipMatch) {
+          console.log("Found IP address:", ipMatch[1]);
+          parsedConfig.ipAddress = ipMatch[1];
+        }
       }
       
-      if (trimmedLine.includes('netmask=') || trimmedLine.includes('netmask ')) {
-        const netmaskMatch = line.match(/(?:netmask=|netmask\s+)([0-9./]+)/i);
-        if (netmaskMatch) parsedConfig.netmask = netmaskMatch[1];
+      // Netmask parsing - multiple formats including CIDR
+      if (trimmedLine.includes('netmask=') || trimmedLine.includes('netmask ') || trimmedLine.includes('/')) {
+        const netmaskMatch = line.match(/(?:netmask=|netmask\s+)([0-9./]+)/i) || 
+                            line.match(/([0-9.]+)\/([0-9]+)/);
+        if (netmaskMatch) {
+          console.log("Found netmask:", netmaskMatch[1] || `/${netmaskMatch[2]}`);
+          parsedConfig.netmask = netmaskMatch[1] || `/${netmaskMatch[2]}`;
+        }
       }
       
-      if (trimmedLine.includes('gateway=') || trimmedLine.includes('gateway ')) {
-        const gatewayMatch = line.match(/(?:gateway=|gateway\s+)([0-9.]+)/i);
-        if (gatewayMatch) parsedConfig.gateway = gatewayMatch[1];
+      // Gateway parsing - multiple formats  
+      if (trimmedLine.includes('gateway=') || trimmedLine.includes('gateway ') || trimmedLine.match(/^\s*gateway\s+[0-9]/)) {
+        const gatewayMatch = line.match(/(?:gateway=|gateway\s+|gateway=)([0-9.]+)/i);
+        if (gatewayMatch) {
+          console.log("Found gateway:", gatewayMatch[1]);
+          parsedConfig.gateway = gatewayMatch[1];
+        }
       }
 
-      // Parse netplan format
+      // Parse netplan format (Ubuntu 18.04+)
       if (trimmedLine.includes('addresses:')) {
         const addressMatch = line.match(/addresses:\s*\[([^\]]+)\]/i);
         if (addressMatch) {
-          const addr = addressMatch[1].replace(/['"]/g, '');
+          const addr = addressMatch[1].replace(/['"]/g, '').trim();
+          console.log("Found netplan address:", addr);
           if (addr.includes('/')) {
             const [ip, prefix] = addr.split('/');
-            parsedConfig.ipAddress = ip;
-            parsedConfig.netmask = `/${prefix}`;
+            parsedConfig.ipAddress = ip.trim();
+            parsedConfig.netmask = `/${prefix.trim()}`;
+          } else {
+            parsedConfig.ipAddress = addr;
           }
         }
       }
 
+      // Netplan gateway
       if (trimmedLine.includes('gateway4:')) {
         const gatewayMatch = line.match(/gateway4:\s*([0-9.]+)/i);
-        if (gatewayMatch) parsedConfig.gateway = gatewayMatch[1];
+        if (gatewayMatch) {
+          console.log("Found netplan gateway:", gatewayMatch[1]);
+          parsedConfig.gateway = gatewayMatch[1];
+        }
       }
 
-      // Parse interface names
-      if (trimmedLine.includes('device=') || trimmedLine.includes('ifname ')) {
-        const interfaceMatch = line.match(/(?:device=|ifname\s+)([a-z0-9]+)/i);
-        if (interfaceMatch && !interfaceMatch[1].includes('br') && !interfaceMatch[1].includes('viif')) {
+      // Parse interface names (eth0, ens3, etc)
+      if (trimmedLine.includes('device=') || trimmedLine.includes('ifname ') || trimmedLine.match(/^[a-z0-9]+:/)) {
+        const interfaceMatch = line.match(/(?:device=|ifname\s+)([a-z0-9]+)/i) ||
+                               line.match(/^([a-z0-9]+):/);
+        if (interfaceMatch && !interfaceMatch[1].includes('br') && !interfaceMatch[1].includes('viif') && !interfaceMatch[1].includes('bond')) {
+          console.log("Found interface:", interfaceMatch[1]);
           parsedConfig.physicalInterface = interfaceMatch[1];
         }
       }
 
       // Parse bridge names
-      if (trimmedLine.includes('bridge=')) {
-        const bridgeMatch = line.match(/bridge=([a-z0-9]+)/i);
-        if (bridgeMatch) parsedConfig.bridgeName = bridgeMatch[1];
+      if (trimmedLine.includes('bridge=') || trimmedLine.includes('bridge ')) {
+        const bridgeMatch = line.match(/(?:bridge=|bridge\s+)([a-z0-9]+)/i);
+        if (bridgeMatch) {
+          console.log("Found bridge:", bridgeMatch[1]);
+          parsedConfig.bridgeName = bridgeMatch[1];
+        }
       }
 
-      // Parse DNS servers
-      if (trimmedLine.includes('dns ') || trimmedLine.includes('nameservers:')) {
-        const dnsMatch = line.match(/(?:dns\s+|addresses:\s*\[)([0-9.,\s"']+)/i);
+      // Parse DNS servers - improved pattern
+      if (trimmedLine.includes('dns') || trimmedLine.includes('nameserver')) {
+        const dnsMatch = line.match(/(?:dns[_-]?nameservers?[=\s]*|addresses:\s*\[)([0-9.,\s"'\[\]]+)/i);
         if (dnsMatch) {
-          const dnsServers = dnsMatch[1].replace(/['"]/g, '').split(/[,\\s]+/).filter(dns => dns.match(/^[0-9.]+$/));
-          if (dnsServers.length > 0) parsedConfig.dnsServers = dnsServers.join(',');
+          const dnsServers = dnsMatch[1]
+            .replace(/['"[\]]/g, '')
+            .split(/[,\s]+/)
+            .filter(dns => dns.match(/^[0-9.]+$/));
+          if (dnsServers.length > 0) {
+            console.log("Found DNS servers:", dnsServers);
+            parsedConfig.dnsServers = dnsServers.join(',');
+          }
+        }
+      }
+
+      // Parse simple key=value format
+      const keyValueMatch = line.match(/^([A-Z_]+)=(.+)$/);
+      if (keyValueMatch) {
+        const [, key, value] = keyValueMatch;
+        switch (key.toUpperCase()) {
+          case 'IPADDR':
+            console.log("Found IPADDR:", value);
+            parsedConfig.ipAddress = value;
+            break;
+          case 'NETMASK':
+            console.log("Found NETMASK:", value);
+            parsedConfig.netmask = value;
+            break;
+          case 'GATEWAY':
+            console.log("Found GATEWAY:", value);
+            parsedConfig.gateway = value;
+            break;
+          case 'DEVICE':
+            if (!value.includes('br') && !value.includes('viif')) {
+              console.log("Found DEVICE:", value);
+              parsedConfig.physicalInterface = value;
+            }
+            break;
         }
       }
     });
 
+    console.log("Parsed configuration:", parsedConfig);
+
     // Apply parsed configuration
-    setConfig(prev => ({
-      ...prev,
-      ...parsedConfig
-    }));
+    if (Object.keys(parsedConfig).length > 0) {
+      setConfig(prev => ({
+        ...prev,
+        ...parsedConfig
+      }));
 
-    // Clear the autofill text
-    setAutoFillText("");
+      // Clear the autofill text
+      setAutoFillText("");
 
-    toast({
-      title: "Configuration Parsed",
-      description: "Network configuration has been automatically filled from the provided text.",
-    });
+      toast({
+        title: "Configuration Parsed",
+        description: `Network configuration has been automatically filled. Found: ${Object.keys(parsedConfig).join(', ')}`,
+      });
+    } else {
+      toast({
+        title: "No Configuration Found",
+        description: "Could not extract network configuration from the provided text. Please check the format.",
+        variant: "destructive",
+      });
+    }
   };
 
   const generateCommands = (): void => {
